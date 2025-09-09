@@ -18,7 +18,8 @@ param(
     [string]$TargetPath    = "Z:\Sharepoint",
     [string]$ClientId      = "4e43c4bb-1a03-4fa2-ad63-c1f358d27996",
     [string]$Tenant        = "allenbutlerconstruction.onmicrosoft.com",   # <-- update with your tenant domain
-    [string]$LogPath       = ""  # Optional: specify custom log path, otherwise uses default
+    [string]$LogPath       = "",  # Optional: specify custom log path, otherwise uses default
+    [switch]$Info          # Show detailed output including skipped files
 )
 
 # ---------------------------
@@ -90,6 +91,20 @@ $downloadedCount = 0
 $skippedCount = 0
 $errorCount = 0
 
+# Specific error counters
+$directoryErrorCount = 0
+$downloadErrorCount = 0
+$missingAfterDownloadCount = 0
+$timestampErrorCount = 0
+$otherErrorCount = 0
+
+# Error tracking arrays
+$directoryErrors = @()
+$downloadErrors = @()
+$missingAfterDownloadErrors = @()
+$timestampErrors = @()
+$otherErrors = @()
+
 foreach ($file in $files) {
     $serverRelativePath = $file.FieldValues.FileRef
     $fileName = $file.FieldValues.FileLeafRef
@@ -110,7 +125,9 @@ foreach ($file in $files) {
             $sourceModifiedLocal = $sourceModified.ToLocalTime()
             
             if ($sourceModifiedLocal -le $localModified) {
-                Write-Host "⏭️  Skipping $fileName (local file is up to date)" -ForegroundColor Yellow
+                if ($Info) {
+                    Write-Host "⏭️  Skipping $fileName (local file is up to date)" -ForegroundColor Yellow
+                }
                 $skippedCount++
                 $shouldDownload = $false
             } else {
@@ -133,7 +150,13 @@ foreach ($file in $files) {
             }
             catch {
                 Write-Warning "❌ Failed to create directory $localDir : $_"
+                $directoryErrorCount++
                 $errorCount++
+                $directoryErrors += [PSCustomObject]@{
+                    FileName = $fileName
+                    Path = $localDir
+                    Error = $_.Exception.Message
+                }
                 continue
             }
         }
@@ -151,21 +174,49 @@ foreach ($file in $files) {
                         $downloadedCount++
                     } else {
                         Write-Warning "⚠️  Downloaded $fileName but cannot set timestamp"
+                        $timestampErrorCount++
+                        $errorCount++
+                        $timestampErrors += [PSCustomObject]@{
+                            FileName = $fileName
+                            Path = $localPath
+                            Error = "Cannot set timestamp - file properties not accessible"
+                        }
                         $downloadedCount++
                     }
                 }
                 catch {
                     Write-Warning "⚠️  Downloaded $fileName but failed to set timestamp: $_"
+                    $timestampErrorCount++
+                    $errorCount++
+                    $timestampErrors += [PSCustomObject]@{
+                        FileName = $fileName
+                        Path = $localPath
+                        Error = $_.Exception.Message
+                    }
                     $downloadedCount++
                 }
             } else {
                 Write-Warning "❌ File download appeared successful but $localPath does not exist"
+                $missingAfterDownloadCount++
                 $errorCount++
+                $missingAfterDownloadErrors += [PSCustomObject]@{
+                    FileName = $fileName
+                    SharePointPath = $serverRelativePath
+                    Path = $localPath
+                    Error = "File missing after download"
+                }
             }
         }
         catch {
             Write-Warning "❌ Failed to download $serverRelativePath : $_"
+            $downloadErrorCount++
             $errorCount++
+            $downloadErrors += [PSCustomObject]@{
+                FileName = $fileName
+                SharePointPath = $serverRelativePath
+                Path = $localPath
+                Error = $_.Exception.Message
+            }
         }
     }
 }
@@ -175,22 +226,27 @@ foreach ($file in $files) {
 # ---------------------------
 $endTime = Get-Date
 $duration = $endTime - $startTime
-$totalProcessed = $downloadedCount + $updatedCount + $skippedCount + $errorCount
+
+# Calculate catch-all error count (errors not categorized above)
+$categorizedErrors = $directoryErrorCount + $downloadErrorCount + $missingAfterDownloadCount + $timestampErrorCount
+$otherErrorCount = $errorCount - $categorizedErrors
+
+$totalProcessed = $downloadedCount + $skippedCount + $errorCount
 
 Write-Host "`n========================================" -ForegroundColor White
 Write-Host "📊 Detailed Sync Summary:" -ForegroundColor White
 Write-Host "   Total files in SharePoint: $($files.Count)" -ForegroundColor White
 Write-Host "   Total files processed: $totalProcessed" -ForegroundColor White
 Write-Host "" -ForegroundColor White
-Write-Host "   ✅ New files downloaded: $downloadedCount" -ForegroundColor Green
-Write-Host "   🔄 Files updated: $updatedCount" -ForegroundColor Cyan
+Write-Host "   ✅ Files downloaded/updated: $downloadedCount" -ForegroundColor Green
 Write-Host "   ⏭️  Files skipped (up to date): $skippedCount" -ForegroundColor Yellow
 Write-Host "" -ForegroundColor White
 Write-Host "   ❌ Total errors: $errorCount" -ForegroundColor Red
 Write-Host "      • Directory creation errors: $directoryErrorCount" -ForegroundColor Red
+Write-Host "      • Download failures: $downloadErrorCount" -ForegroundColor Red
 Write-Host "      • Files missing after download: $missingAfterDownloadCount" -ForegroundColor Red
 Write-Host "      • Timestamp setting errors: $timestampErrorCount" -ForegroundColor Yellow
-Write-Host "      • Other download failures: $($errorCount - $directoryErrorCount - $missingAfterDownloadCount)" -ForegroundColor Red
+Write-Host "      • Other errors: $otherErrorCount" -ForegroundColor Red
 Write-Host "" -ForegroundColor White
 Write-Host "   ⏱️  Duration: $($duration.ToString('hh\:mm\:ss'))" -ForegroundColor White
 Write-Host "   🕐 Start Time: $startTime" -ForegroundColor White
@@ -256,6 +312,13 @@ if ($errorCount -gt 0) {
         }
     }
     
+    if ($otherErrorCount -gt 0) {
+        Write-Host "`n❓ OTHER ERRORS ($otherErrorCount):" -ForegroundColor Red
+        Write-Host "   • These errors were not categorized into specific types" -ForegroundColor White
+        Write-Host "   • Check the transcript log for detailed information: $LogPath" -ForegroundColor Gray
+        Write-Host ""
+    }
+    
     # Save detailed error report to file
     $errorReportPath = $LogPath.Replace(".log", "_ErrorReport.txt")
     $errorReport = @()
@@ -308,6 +371,14 @@ if ($errorCount -gt 0) {
             $errorReport += "Error: $($_.Error)"
             $errorReport += ""
         }
+    }
+    
+    if ($otherErrorCount -gt 0) {
+        $errorReport += "OTHER ERRORS ($otherErrorCount):"
+        $errorReport += "-"*40
+        $errorReport += "These errors were not categorized into specific types."
+        $errorReport += "Check the transcript log for detailed information."
+        $errorReport += ""
     }
     
     $errorReport | Out-File -FilePath $errorReportPath -Encoding UTF8
