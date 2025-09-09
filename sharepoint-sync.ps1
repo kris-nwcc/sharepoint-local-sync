@@ -136,6 +136,18 @@ foreach ($file in $files) {
     $fileName = $file.FieldValues.FileLeafRef
     $sourceModified = $file.FieldValues.Modified
     
+    # Decode URL-encoded characters in the server relative path and filename
+    # This fixes issues with special characters like semicolons (%3b) in filenames
+    try {
+        $serverRelativePath = [System.Web.HttpUtility]::UrlDecode($serverRelativePath)
+        $fileName = [System.Web.HttpUtility]::UrlDecode($fileName)
+    }
+    catch {
+        Write-Warning "⚠️  Failed to decode URL-encoded characters for file: $fileName"
+        Write-Warning "   Using original paths. Error: $($_.Exception.Message)"
+        # Continue with original paths if decoding fails
+    }
+    
     # Periodic transcript verification (every 100 files)
     if (($downloadedCount + $skippedCount + $errorCount) % 100 -eq 0 -and ($downloadedCount + $skippedCount + $errorCount) -gt 0) {
         Write-Host "📊 Progress: $($downloadedCount + $skippedCount + $errorCount) files processed..." -ForegroundColor Cyan
@@ -196,6 +208,11 @@ foreach ($file in $files) {
         
         # Download file
         try {
+            # Log the actual paths being used for debugging
+            if ($Info) {
+                Write-Host "🔍 Downloading from SharePoint path: $serverRelativePath" -ForegroundColor Gray
+                Write-Host "🔍 Saving to local path: $localPath" -ForegroundColor Gray
+            }
             Get-PnPFile -Url $serverRelativePath -Path $localDir -FileName $fileName -AsFile -Force
             
             # Verify the file was downloaded and set timestamp
