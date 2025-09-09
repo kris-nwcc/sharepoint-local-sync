@@ -32,12 +32,27 @@ if ([string]::IsNullOrEmpty($LogPath)) {
 
 # Ensure log directory exists
 $logDir = Split-Path $LogPath -Parent
-if (-not (Test-Path $logDir)) {
-    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+if (-not (Test-Path -LiteralPath $logDir)) {
+    New-Item -ItemType Directory -LiteralPath $logDir -Force | Out-Null
 }
 
 Write-Host "Starting transcript log: $LogPath" -ForegroundColor Cyan
-Start-Transcript -Path $LogPath -Force
+
+# Initialize transcript with error handling
+$transcriptStarted = $false
+try {
+    Start-Transcript -Path $LogPath -Force -Append
+    $transcriptStarted = $true
+    Write-Host "✅ Transcript successfully started" -ForegroundColor Green
+    
+    # Verify transcript is working by writing a test message
+    Write-Host "🔍 Testing transcript capture..." -ForegroundColor Cyan
+    [System.Console]::Out.Flush()
+    
+} catch {
+    Write-Warning "⚠️  Failed to start transcript: $($_.Exception.Message)"
+    Write-Warning "Script will continue but logging may be limited"
+}
 
 Write-Host "========================================" -ForegroundColor White
 Write-Host "SharePoint Document Sync Started" -ForegroundColor White
@@ -59,14 +74,25 @@ Connect-PnPOnline -Url $SiteUrl -ClientId $ClientId -Tenant $Tenant -Interactive
 $library = Get-PnPList -Identity $LibraryName -ErrorAction SilentlyContinue
 if (-not $library) {
     Write-Error "Library '$LibraryName' not found at $SiteUrl"
-    Stop-Transcript
-    exit
+    if ($transcriptStarted) {
+        try {
+            Stop-Transcript
+            Write-Host "Transcript stopped due to library not found error" -ForegroundColor Yellow
+        } catch {
+            Write-Warning "Failed to stop transcript: $($_.Exception.Message)"
+        }
+    }
+    exit 1
 }
 Write-Host "Connected. Library found: $($library.Title)"
 
 # ---------------------------
-# ENUMERATE ITEMS
+# MAIN EXECUTION WITH ERROR HANDLING
 # ---------------------------
+try {
+    # ---------------------------
+    # ENUMERATE ITEMS
+    # ---------------------------
 Write-Host "Enumerating all files in $LibraryName ..."
 $pageSize = 5000
 $allItems = @()
@@ -110,15 +136,22 @@ foreach ($file in $files) {
     $fileName = $file.FieldValues.FileLeafRef
     $sourceModified = $file.FieldValues.Modified
     
+    # Periodic transcript verification (every 100 files)
+    if (($downloadedCount + $skippedCount + $errorCount) % 100 -eq 0 -and ($downloadedCount + $skippedCount + $errorCount) -gt 0) {
+        Write-Host "📊 Progress: $($downloadedCount + $skippedCount + $errorCount) files processed..." -ForegroundColor Cyan
+        # Force output buffer flush to ensure transcript captures progress
+        [System.Console]::Out.Flush()
+    }
+    
     # Build local path
     $relativePath = $serverRelativePath.Replace("/sites/ProjectManagement/Shared Documents", "")
     $localPath = Join-Path $TargetPath $relativePath
     
     # Check if file already exists and compare dates
     $shouldDownload = $true
-    if (Test-Path $localPath) {
+    if (Test-Path -LiteralPath $localPath) {
         try {
-            $localFile = Get-Item $localPath -ErrorAction Stop
+            $localFile = Get-Item -LiteralPath $localPath -ErrorAction Stop
             $localModified = $localFile.LastWriteTime
             
             # Convert SharePoint time to local time for comparison
@@ -144,9 +177,9 @@ foreach ($file in $files) {
     if ($shouldDownload) {
         # Ensure folder exists
         $localDir = Split-Path $localPath -Parent
-        if (-not (Test-Path $localDir)) {
+        if (-not (Test-Path -LiteralPath $localDir)) {
             try {
-                New-Item -ItemType Directory -Path $localDir -Force | Out-Null
+                New-Item -ItemType Directory -LiteralPath $localDir -Force | Out-Null
             }
             catch {
                 Write-Warning "❌ Failed to create directory $localDir : $_"
@@ -166,9 +199,9 @@ foreach ($file in $files) {
             Get-PnPFile -Url $serverRelativePath -Path $localDir -FileName $fileName -AsFile -Force
             
             # Verify the file was downloaded and set timestamp
-            if (Test-Path $localPath) {
+            if (Test-Path -LiteralPath $localPath) {
                 try {
-                    $downloadedFile = Get-Item $localPath -ErrorAction Stop
+                    $downloadedFile = Get-Item -LiteralPath $localPath -ErrorAction Stop
                     if ($downloadedFile -and $downloadedFile.PSObject.Properties['LastWriteTime']) {
                         $downloadedFile.LastWriteTime = $sourceModified.ToLocalTime()
                         $downloadedCount++
@@ -386,5 +419,40 @@ if ($errorCount -gt 0) {
     Write-Host "========================================" -ForegroundColor Red
 }
 
+} catch {
+    Write-Error "❌ Fatal error during script execution: $($_.Exception.Message)"
+    Write-Error "Stack trace: $($_.ScriptStackTrace)"
+    $errorCount++
+}
+
+# ---------------------------
+# STOP TRANSCRIPT
+# ---------------------------
 Write-Host "`nStopping transcript..." -ForegroundColor Cyan
-Stop-Transcript
+
+# Final transcript verification
+if ($transcriptStarted) {
+    Write-Host "🔍 Final transcript verification..." -ForegroundColor Cyan
+    [System.Console]::Out.Flush()
+    
+    try {
+        Stop-Transcript
+        Write-Host "✅ Transcript successfully stopped" -ForegroundColor Green
+        
+        # Verify transcript file exists and has content
+        if (Test-Path -LiteralPath $LogPath) {
+            $logSize = (Get-Item -LiteralPath $LogPath).Length
+            Write-Host "📄 Transcript file size: $logSize bytes" -ForegroundColor Green
+            if ($logSize -lt 1000) {
+                Write-Warning "⚠️  Transcript file seems unusually small - may indicate incomplete capture"
+            }
+        } else {
+            Write-Warning "⚠️  Transcript file not found at expected location: $LogPath"
+        }
+        
+    } catch {
+        Write-Warning "⚠️  Failed to stop transcript: $($_.Exception.Message)"
+    }
+} else {
+    Write-Host "ℹ️  No transcript was started, so no need to stop it" -ForegroundColor Yellow
+}
