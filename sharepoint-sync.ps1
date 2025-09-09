@@ -116,9 +116,9 @@ foreach ($file in $files) {
     
     # Check if file already exists and compare dates
     $shouldDownload = $true
-    if (Test-Path $localPath) {
+    if (Test-Path -LiteralPath $localPath) {
         try {
-            $localFile = Get-Item $localPath -ErrorAction Stop
+            $localFile = Get-Item -LiteralPath $localPath -ErrorAction Stop
             $localModified = $localFile.LastWriteTime
             
             # Convert SharePoint time to local time for comparison
@@ -144,9 +144,9 @@ foreach ($file in $files) {
     if ($shouldDownload) {
         # Ensure folder exists
         $localDir = Split-Path $localPath -Parent
-        if (-not (Test-Path $localDir)) {
+        if (-not (Test-Path -LiteralPath $localDir)) {
             try {
-                New-Item -ItemType Directory -Path $localDir -Force | Out-Null
+                New-Item -ItemType Directory -LiteralPath $localDir -Force | Out-Null
             }
             catch {
                 Write-Warning "❌ Failed to create directory $localDir : $_"
@@ -166,9 +166,9 @@ foreach ($file in $files) {
             Get-PnPFile -Url $serverRelativePath -Path $localDir -FileName $fileName -AsFile -Force
             
             # Verify the file was downloaded and set timestamp
-            if (Test-Path $localPath) {
+            if (Test-Path -LiteralPath $localPath) {
                 try {
-                    $downloadedFile = Get-Item $localPath -ErrorAction Stop
+                    $downloadedFile = Get-Item -LiteralPath $localPath -ErrorAction Stop
                     if ($downloadedFile -and $downloadedFile.PSObject.Properties['LastWriteTime']) {
                         $downloadedFile.LastWriteTime = $sourceModified.ToLocalTime()
                         $downloadedCount++
