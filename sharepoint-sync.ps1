@@ -18,7 +18,8 @@ param(
     [string]$TargetPath    = "Z:\Sharepoint",
     [string]$ClientId      = "4e43c4bb-1a03-4fa2-ad63-c1f358d27996",
     [string]$Tenant        = "allenbutlerconstruction.onmicrosoft.com",   # <-- update with your tenant domain
-    [string]$LogPath       = ""  # Optional: specify custom log path, otherwise uses default
+    [string]$LogPath       = "",  # Optional: specify custom log path, otherwise uses default
+    [switch]$Info          # Show detailed output including skipped files
 )
 
 # ---------------------------
@@ -110,7 +111,9 @@ foreach ($file in $files) {
             $sourceModifiedLocal = $sourceModified.ToLocalTime()
             
             if ($sourceModifiedLocal -le $localModified) {
-                Write-Host "⏭️  Skipping $fileName (local file is up to date)" -ForegroundColor Yellow
+                if ($Info) {
+                    Write-Host "⏭️  Skipping $fileName (local file is up to date)" -ForegroundColor Yellow
+                }
                 $skippedCount++
                 $shouldDownload = $false
             } else {
@@ -175,22 +178,17 @@ foreach ($file in $files) {
 # ---------------------------
 $endTime = Get-Date
 $duration = $endTime - $startTime
-$totalProcessed = $downloadedCount + $updatedCount + $skippedCount + $errorCount
+$totalProcessed = $downloadedCount + $skippedCount + $errorCount
 
 Write-Host "`n========================================" -ForegroundColor White
 Write-Host "📊 Detailed Sync Summary:" -ForegroundColor White
 Write-Host "   Total files in SharePoint: $($files.Count)" -ForegroundColor White
 Write-Host "   Total files processed: $totalProcessed" -ForegroundColor White
 Write-Host "" -ForegroundColor White
-Write-Host "   ✅ New files downloaded: $downloadedCount" -ForegroundColor Green
-Write-Host "   🔄 Files updated: $updatedCount" -ForegroundColor Cyan
+Write-Host "   ✅ Files downloaded/updated: $downloadedCount" -ForegroundColor Green
 Write-Host "   ⏭️  Files skipped (up to date): $skippedCount" -ForegroundColor Yellow
 Write-Host "" -ForegroundColor White
 Write-Host "   ❌ Total errors: $errorCount" -ForegroundColor Red
-Write-Host "      • Directory creation errors: $directoryErrorCount" -ForegroundColor Red
-Write-Host "      • Files missing after download: $missingAfterDownloadCount" -ForegroundColor Red
-Write-Host "      • Timestamp setting errors: $timestampErrorCount" -ForegroundColor Yellow
-Write-Host "      • Other download failures: $($errorCount - $directoryErrorCount - $missingAfterDownloadCount)" -ForegroundColor Red
 Write-Host "" -ForegroundColor White
 Write-Host "   ⏱️  Duration: $($duration.ToString('hh\:mm\:ss'))" -ForegroundColor White
 Write-Host "   🕐 Start Time: $startTime" -ForegroundColor White
@@ -208,110 +206,13 @@ Write-Host "📄 Complete log saved to: $LogPath" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor White
 
 # ---------------------------
-# DETAILED ERROR REPORT
+# ERROR REPORT
 # ---------------------------
 if ($errorCount -gt 0) {
-    Write-Host "`n🚨 DETAILED ERROR REPORT:" -ForegroundColor Red
+    Write-Host "`n🚨 ERROR SUMMARY:" -ForegroundColor Red
     Write-Host "========================================" -ForegroundColor Red
-    
-    if ($directoryErrors.Count -gt 0) {
-        Write-Host "`n📁 DIRECTORY CREATION ERRORS ($($directoryErrors.Count)):" -ForegroundColor Red
-        $directoryErrors | ForEach-Object {
-            Write-Host "   • $($_.FileName)" -ForegroundColor White
-            Write-Host "     Path: $($_.Path)" -ForegroundColor Gray
-            Write-Host "     Error: $($_.Error)" -ForegroundColor Yellow
-            Write-Host ""
-        }
-    }
-    
-    if ($downloadErrors.Count -gt 0) {
-        Write-Host "`n⬇️  DOWNLOAD FAILURES ($($downloadErrors.Count)):" -ForegroundColor Red
-        $downloadErrors | ForEach-Object {
-            Write-Host "   • $($_.FileName)" -ForegroundColor White
-            Write-Host "     SharePoint: $($_.SharePointPath)" -ForegroundColor Gray
-            Write-Host "     Local: $($_.Path)" -ForegroundColor Gray
-            Write-Host "     Error: $($_.Error)" -ForegroundColor Yellow
-            Write-Host ""
-        }
-    }
-    
-    if ($missingAfterDownloadErrors.Count -gt 0) {
-        Write-Host "`n👻 FILES MISSING AFTER DOWNLOAD ($($missingAfterDownloadErrors.Count)):" -ForegroundColor Red
-        $missingAfterDownloadErrors | ForEach-Object {
-            Write-Host "   • $($_.FileName)" -ForegroundColor White
-            Write-Host "     SharePoint: $($_.SharePointPath)" -ForegroundColor Gray
-            Write-Host "     Expected at: $($_.Path)" -ForegroundColor Gray
-            Write-Host "     Error: $($_.Error)" -ForegroundColor Yellow
-            Write-Host ""
-        }
-    }
-    
-    if ($timestampErrors.Count -gt 0) {
-        Write-Host "`n🕐 TIMESTAMP SETTING ERRORS ($($timestampErrors.Count)):" -ForegroundColor Yellow
-        $timestampErrors | ForEach-Object {
-            Write-Host "   • $($_.FileName)" -ForegroundColor White
-            Write-Host "     Path: $($_.Path)" -ForegroundColor Gray
-            Write-Host "     Error: $($_.Error)" -ForegroundColor Yellow
-            Write-Host ""
-        }
-    }
-    
-    # Save detailed error report to file
-    $errorReportPath = $LogPath.Replace(".log", "_ErrorReport.txt")
-    $errorReport = @()
-    $errorReport += "SharePoint Sync Error Report"
-    $errorReport += "Generated: $(Get-Date)"
-    $errorReport += "="*50
-    $errorReport += ""
-    
-    if ($directoryErrors.Count -gt 0) {
-        $errorReport += "DIRECTORY CREATION ERRORS ($($directoryErrors.Count)):"
-        $errorReport += "-"*40
-        $directoryErrors | ForEach-Object {
-            $errorReport += "File: $($_.FileName)"
-            $errorReport += "Path: $($_.Path)"
-            $errorReport += "Error: $($_.Error)"
-            $errorReport += ""
-        }
-    }
-    
-    if ($downloadErrors.Count -gt 0) {
-        $errorReport += "DOWNLOAD FAILURES ($($downloadErrors.Count)):"
-        $errorReport += "-"*40
-        $downloadErrors | ForEach-Object {
-            $errorReport += "File: $($_.FileName)"
-            $errorReport += "SharePoint Path: $($_.SharePointPath)"
-            $errorReport += "Local Path: $($_.Path)"
-            $errorReport += "Error: $($_.Error)"
-            $errorReport += ""
-        }
-    }
-    
-    if ($missingAfterDownloadErrors.Count -gt 0) {
-        $errorReport += "FILES MISSING AFTER DOWNLOAD ($($missingAfterDownloadErrors.Count)):"
-        $errorReport += "-"*40
-        $missingAfterDownloadErrors | ForEach-Object {
-            $errorReport += "File: $($_.FileName)"
-            $errorReport += "SharePoint Path: $($_.SharePointPath)"
-            $errorReport += "Expected Local Path: $($_.Path)"
-            $errorReport += "Error: $($_.Error)"
-            $errorReport += ""
-        }
-    }
-    
-    if ($timestampErrors.Count -gt 0) {
-        $errorReport += "TIMESTAMP SETTING ERRORS ($($timestampErrors.Count)):"
-        $errorReport += "-"*40
-        $timestampErrors | ForEach-Object {
-            $errorReport += "File: $($_.FileName)"
-            $errorReport += "Path: $($_.Path)"
-            $errorReport += "Error: $($_.Error)"
-            $errorReport += ""
-        }
-    }
-    
-    $errorReport | Out-File -FilePath $errorReportPath -Encoding UTF8
-    Write-Host "`n📄 Detailed error report saved to: $errorReportPath" -ForegroundColor Cyan
+    Write-Host "   ❌ Total errors encountered: $errorCount" -ForegroundColor Red
+    Write-Host "   📄 Check the transcript log for detailed error information: $LogPath" -ForegroundColor Yellow
     Write-Host "========================================" -ForegroundColor Red
 }
 
