@@ -9,8 +9,18 @@
     - Skips files that already exist unless source is newer.
     - Logs all output to a transcript file.
     - Use -Info switch to show detailed output including skipped files.
+    - Enhanced error handling to prevent script termination on individual file errors.
+    - Automatically skips .dropbox system files that cause issues.
+    - Generates detailed error reports even on fatal errors.
 .NOTES
     Requires: PnP.PowerShell (Install-Module PnP.PowerShell -Force)
+    
+    FIXES APPLIED:
+    - Fixed wildcard character pattern errors that caused script termination
+    - Added retry logic for file download verification
+    - Improved handling of files that no longer exist in SharePoint
+    - Added comprehensive error handling to prevent script crashes
+    - Ensured error reports are generated even on fatal errors
 #>
 param(
     [string]$SiteUrl       = "https://allenbutlerconstruction.sharepoint.com/sites/ProjectManagement",
@@ -21,6 +31,12 @@ param(
     [string]$LogPath       = "",  # Optional: specify custom log path, otherwise uses default
     [switch]$Info          # Show detailed output including skipped files
 )
+
+# ---------------------------
+# SETUP ERROR HANDLING
+# ---------------------------
+# Set error action preference to continue on errors instead of stopping
+$ErrorActionPreference = "Continue"
 
 # ---------------------------
 # SETUP LOGGING
@@ -132,9 +148,17 @@ $timestampErrors = @()
 $otherErrors = @()
 
 foreach ($file in $files) {
-    $serverRelativePath = $file.FieldValues.FileRef
-    $fileName = $file.FieldValues.FileLeafRef
-    $sourceModified = $file.FieldValues.Modified
+    try {
+        $serverRelativePath = $file.FieldValues.FileRef
+        $fileName = $file.FieldValues.FileLeafRef
+        $sourceModified = $file.FieldValues.Modified
+        
+        # Skip .dropbox files as they are special system files that cause issues
+        if ($fileName -eq ".dropbox") {
+            Write-Host "⏭️  Skipping .dropbox file (system file): $fileName" -ForegroundColor Yellow
+            $skippedCount++
+            continue
+        }
     
     # Decode URL-encoded characters in the server relative path and filename
     # This fixes issues with special characters like semicolons (%3b) in filenames
@@ -155,14 +179,48 @@ foreach ($file in $files) {
         [System.Console]::Out.Flush()
     }
     
-    # Build local path
-    $relativePath = $serverRelativePath.Replace("/sites/ProjectManagement/Shared Documents", "")
-    $localPath = Join-Path $TargetPath $relativePath
+    # Build local path with error handling for special characters
+    try {
+        $relativePath = $serverRelativePath.Replace("/sites/ProjectManagement/Shared Documents", "")
+        $localPath = Join-Path $TargetPath $relativePath
+        
+        # Validate path doesn't contain invalid characters that could cause wildcard issues
+        if ($localPath -match '[\*\?\[\]]') {
+            Write-Warning "⚠️  Skipping file with invalid characters in path: $fileName"
+            $otherErrorCount++
+            $errorCount++
+            $otherErrors += [PSCustomObject]@{
+                FileName = $fileName
+                Path = $localPath
+                Error = "Path contains invalid wildcard characters"
+            }
+            continue
+        }
+    }
+    catch {
+        Write-Warning "⚠️  Failed to build local path for file: $fileName - $($_.Exception.Message)"
+        $otherErrorCount++
+        $errorCount++
+        $otherErrors += [PSCustomObject]@{
+            FileName = $fileName
+            Path = "Path construction failed"
+            Error = $_.Exception.Message
+        }
+        continue
+    }
     
     # Check if file already exists and compare dates
     $shouldDownload = $true
-    if (Test-Path -Path $localPath) {
+    if (Test-Path -Path $localPath -ErrorAction SilentlyContinue) {
         try {
+            # Skip .dropbox files as they are special system files
+            if ($fileName -eq ".dropbox") {
+                Write-Host "⏭️  Skipping .dropbox file (system file)" -ForegroundColor Yellow
+                $skippedCount++
+                $shouldDownload = $false
+                continue
+            }
+            
             $localFile = Get-Item -Path $localPath -ErrorAction Stop
             $localModified = $localFile.LastWriteTime
             
@@ -213,10 +271,25 @@ foreach ($file in $files) {
                 Write-Host "🔍 Downloading from SharePoint path: $serverRelativePath" -ForegroundColor Gray
                 Write-Host "🔍 Saving to local path: $localPath" -ForegroundColor Gray
             }
-            Get-PnPFile -Url $serverRelativePath -Path $localDir -FileName $fileName -AsFile -Force
+            
+            # Use a more robust download approach
+            $downloadResult = Get-PnPFile -Url $serverRelativePath -Path $localDir -FileName $fileName -AsFile -Force -ErrorAction Stop
+            
+            # Add a small delay to ensure file system operations complete
+            Start-Sleep -Milliseconds 100
             
             # Verify the file was downloaded and set timestamp
-            if (Test-Path -Path $localPath) {
+            # Wait a bit longer and retry if file doesn't exist immediately
+            $fileExists = $false
+            for ($retry = 0; $retry -lt 3; $retry++) {
+                if (Test-Path -Path $localPath -ErrorAction SilentlyContinue) {
+                    $fileExists = $true
+                    break
+                }
+                Start-Sleep -Milliseconds 200
+            }
+            
+            if ($fileExists) {
                 try {
                     $downloadedFile = Get-Item -Path $localPath -ErrorAction Stop
                     if ($downloadedFile -and $downloadedFile.PSObject.Properties['LastWriteTime']) {
@@ -258,16 +331,36 @@ foreach ($file in $files) {
             }
         }
         catch {
-            Write-Warning "❌ Failed to download $serverRelativePath : $_"
-            $downloadErrorCount++
-            $errorCount++
-            $downloadErrors += [PSCustomObject]@{
-                FileName = $fileName
-                SharePointPath = $serverRelativePath
-                Path = $localPath
-                Error = $_.Exception.Message
+            $errorMessage = $_.Exception.Message
+            Write-Warning "❌ Failed to download $serverRelativePath : $errorMessage"
+            
+            # Check if it's a "file does not exist" error
+            if ($errorMessage -like "*does not exist*") {
+                Write-Host "ℹ️  File no longer exists in SharePoint: $fileName" -ForegroundColor Yellow
+                $skippedCount++  # Count as skipped rather than error
+            } else {
+                $downloadErrorCount++
+                $errorCount++
+                $downloadErrors += [PSCustomObject]@{
+                    FileName = $fileName
+                    SharePointPath = $serverRelativePath
+                    Path = $localPath
+                    Error = $errorMessage
+                }
             }
         }
+    }
+    }
+    catch {
+        Write-Warning "❌ Error processing file $fileName : $($_.Exception.Message)"
+        $otherErrorCount++
+        $errorCount++
+        $otherErrors += [PSCustomObject]@{
+            FileName = $fileName
+            Path = "File processing failed"
+            Error = $_.Exception.Message
+        }
+        # Continue processing other files instead of terminating
     }
 }
 
@@ -440,6 +533,81 @@ if ($errorCount -gt 0) {
     Write-Error "❌ Fatal error during script execution: $($_.Exception.Message)"
     Write-Error "Stack trace: $($_.ScriptStackTrace)"
     $errorCount++
+    
+    # Generate error report even if script fails
+    Write-Host "`n🚨 Generating error report due to fatal error..." -ForegroundColor Red
+    try {
+        $errorReportPath = $LogPath.Replace(".log", "_ErrorReport.txt")
+        $errorReport = @()
+        $errorReport += "SharePoint Sync Error Report - FATAL ERROR"
+        $errorReport += "Generated: $(Get-Date)"
+        $errorReport += "Fatal Error: $($_.Exception.Message)"
+        $errorReport += "="*50
+        $errorReport += ""
+        
+        if ($directoryErrors.Count -gt 0) {
+            $errorReport += "DIRECTORY CREATION ERRORS ($($directoryErrors.Count)):"
+            $errorReport += "-"*40
+            $directoryErrors | ForEach-Object {
+                $errorReport += "File: $($_.FileName)"
+                $errorReport += "Path: $($_.Path)"
+                $errorReport += "Error: $($_.Error)"
+                $errorReport += ""
+            }
+        }
+        
+        if ($downloadErrors.Count -gt 0) {
+            $errorReport += "DOWNLOAD FAILURES ($($downloadErrors.Count)):"
+            $errorReport += "-"*40
+            $downloadErrors | ForEach-Object {
+                $errorReport += "File: $($_.FileName)"
+                $errorReport += "SharePoint Path: $($_.SharePointPath)"
+                $errorReport += "Local Path: $($_.Path)"
+                $errorReport += "Error: $($_.Error)"
+                $errorReport += ""
+            }
+        }
+        
+        if ($missingAfterDownloadErrors.Count -gt 0) {
+            $errorReport += "FILES MISSING AFTER DOWNLOAD ($($missingAfterDownloadErrors.Count)):"
+            $errorReport += "-"*40
+            $missingAfterDownloadErrors | ForEach-Object {
+                $errorReport += "File: $($_.FileName)"
+                $errorReport += "SharePoint Path: $($_.SharePointPath)"
+                $errorReport += "Expected Local Path: $($_.Path)"
+                $errorReport += "Error: $($_.Error)"
+                $errorReport += ""
+            }
+        }
+        
+        if ($timestampErrors.Count -gt 0) {
+            $errorReport += "TIMESTAMP SETTING ERRORS ($($timestampErrors.Count)):"
+            $errorReport += "-"*40
+            $timestampErrors | ForEach-Object {
+                $errorReport += "File: $($_.FileName)"
+                $errorReport += "Path: $($_.Path)"
+                $errorReport += "Error: $($_.Error)"
+                $errorReport += ""
+            }
+        }
+        
+        if ($otherErrors.Count -gt 0) {
+            $errorReport += "OTHER ERRORS ($($otherErrors.Count)):"
+            $errorReport += "-"*40
+            $otherErrors | ForEach-Object {
+                $errorReport += "File: $($_.FileName)"
+                $errorReport += "Path: $($_.Path)"
+                $errorReport += "Error: $($_.Error)"
+                $errorReport += ""
+            }
+        }
+        
+        $errorReport | Out-File -FilePath $errorReportPath -Encoding UTF8
+        Write-Host "📄 Emergency error report saved to: $errorReportPath" -ForegroundColor Cyan
+    }
+    catch {
+        Write-Warning "⚠️  Failed to generate emergency error report: $($_.Exception.Message)"
+    }
 }
 
 # ---------------------------
