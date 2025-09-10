@@ -32,8 +32,8 @@ if ([string]::IsNullOrEmpty($LogPath)) {
 
 # Ensure log directory exists
 $logDir = Split-Path $LogPath -Parent
-if (-not (Test-Path -LiteralPath $logDir)) {
-    New-Item -ItemType Directory -LiteralPath $logDir -Force | Out-Null
+if (-not (Test-Path -Path $logDir)) {
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 }
 
 Write-Host "Starting transcript log: $LogPath" -ForegroundColor Cyan
@@ -161,9 +161,9 @@ foreach ($file in $files) {
     
     # Check if file already exists and compare dates
     $shouldDownload = $true
-    if (Test-Path -LiteralPath $localPath) {
+    if (Test-Path -Path $localPath) {
         try {
-            $localFile = Get-Item -LiteralPath $localPath -ErrorAction Stop
+            $localFile = Get-Item -Path $localPath -ErrorAction Stop
             $localModified = $localFile.LastWriteTime
             
             # Convert SharePoint time to local time for comparison
@@ -189,9 +189,9 @@ foreach ($file in $files) {
     if ($shouldDownload) {
         # Ensure folder exists
         $localDir = Split-Path $localPath -Parent
-        if (-not (Test-Path -LiteralPath $localDir)) {
+        if (-not (Test-Path -Path $localDir)) {
             try {
-                New-Item -ItemType Directory -LiteralPath $localDir -Force | Out-Null
+                New-Item -ItemType Directory -Path $localDir -Force | Out-Null
             }
             catch {
                 Write-Warning "❌ Failed to create directory $localDir : $_"
@@ -216,9 +216,9 @@ foreach ($file in $files) {
             Get-PnPFile -Url $serverRelativePath -Path $localDir -FileName $fileName -AsFile -Force
             
             # Verify the file was downloaded and set timestamp
-            if (Test-Path -LiteralPath $localPath) {
+            if (Test-Path -Path $localPath) {
                 try {
-                    $downloadedFile = Get-Item -LiteralPath $localPath -ErrorAction Stop
+                    $downloadedFile = Get-Item -Path $localPath -ErrorAction Stop
                     if ($downloadedFile -and $downloadedFile.PSObject.Properties['LastWriteTime']) {
                         $downloadedFile.LastWriteTime = $sourceModified.ToLocalTime()
                         $downloadedCount++
@@ -457,8 +457,8 @@ if ($transcriptStarted) {
         Write-Host "✅ Transcript successfully stopped" -ForegroundColor Green
         
         # Verify transcript file exists and has content
-        if (Test-Path -LiteralPath $LogPath) {
-            $logSize = (Get-Item -LiteralPath $LogPath).Length
+        if (Test-Path -Path $LogPath) {
+            $logSize = (Get-Item -Path $LogPath).Length
             Write-Host "📄 Transcript file size: $logSize bytes" -ForegroundColor Green
             if ($logSize -lt 1000) {
                 Write-Warning "⚠️  Transcript file seems unusually small - may indicate incomplete capture"
